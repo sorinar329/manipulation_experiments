@@ -1,0 +1,9 @@
+WARNING Mon Jul  6 12:16:52 2026: Attach conflict when attaching 'panda nohand' to 'apartment', policy is 'warning'
+integrator: parent has 0, child has 3, keeping parent value
+
+WARNING Mon Jul  6 12:17:12 2026: Attach conflict when attaching 'panda nohand' to 'apartment', policy is 'warning'
+integrator: parent has 0, child has 3, keeping parent value
+
+WARNING Mon Jul  6 12:18:03 2026: Attach conflict when attaching 'panda nohand' to 'apartment', policy is 'warning'
+integrator: parent has 0, child has 3, keeping parent value
+
