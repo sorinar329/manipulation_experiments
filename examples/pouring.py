@@ -37,26 +37,45 @@ PANDA_DIR = Path(__file__).resolve().parent.parent / "resources/robot/robot_arms
 # --- segments around a thin cylindrical bottom, since MuJoCo has no hollow
 # --- cylinder primitive). ---
 CUP_RADIUS = 0.035
-CUP_HEIGHT = 0.075
-WALL_THICK = 0.003
-BOTTOM_THICK = 0.004
+TARGET_RADIUS = 0.050                  # receiving cup is a bit wider, to catch the pour
+CUP_HEIGHT = 0.090
+WALL_THICK = 0.012                     # thick enough that spheres can't squeeze/tunnel through
+BOTTOM_THICK = 0.010                   # thick bottom so poured spheres don't tunnel through on impact
 N_WALL_SEG = 16
 
-SOURCE_XY = np.array([0.45, -0.20])   # cup that starts full, gets picked up
-TARGET_XY = np.array([0.52, 0.22])    # empty cup, fixed to the world
+SOURCE_XY = np.array([0.45, -0.15])   # cup that starts full, gets picked up
+TARGET_XY = np.array([0.50, 0.18])    # empty cup, fixed to the world -- under the pour
 
 # --- Spheres that start inside the source cup. ---
 N_PARTICLES = 10
 PARTICLE_RADIUS = 0.007
+# Soft-ish contacts + a little rolling friction so the poured spheres settle
+# instead of skittering across the floor on a near-frictionless roll.
+PARTICLE_FRICTION = [0.7, 0.02, 0.02]
+PARTICLE_SOLREF = [0.01, 1.0]
 
-HOVER_HEIGHT = 0.28
-# Where the gripper hovers to pour: offset back along -x from the target so that
-# once the cup tilts about the pinch site the lip swings out over the target's
-# mouth. Tune POUR_DX / POUR_HEIGHT / TILT_ANGLE together if the stream misses.
-POUR_DX = -0.06
-POUR_HEIGHT = 0.17
-TILT_ANGLE = np.deg2rad(120.0)         # how far to tip the cup during the pour
-TILT_AXIS = np.array([0.0, 1.0, 0.0])  # world axis to tilt about (tips lip toward +x)
+# --- Side grasp: the gripper approaches the cup horizontally (parked on the -y
+# --- side and moving in +y), fingers straddling the cup body in x. The pour is
+# --- then a wrist *roll about the horizontal approach axis* -- essentially a
+# --- twist of joint 7 -- so the arm holds position cleanly while the cup tips.
+APPROACH_DIR = np.array([0.0, 1.0, 0.0])   # gripper closes in along +y toward the cup
+FINGER_AXIS = np.array([1.0, 0.0, 0.0])    # fingers open/close along x, straddling the cup
+GRASP_FRAC = 0.55                          # grab this far up the cup wall (0=bottom, 1=rim)
+PRE_GRASP_BACK = 0.14                      # pre-grasp standoff along -APPROACH_DIR
+
+HOVER_HEIGHT = 0.30
+# Where the gripper holds the cup to pour: directly over the target cup, low
+# enough that the spheres drop only a few cm into it (so they don't scatter).
+# POUR_D* nudge the hold pose so the tipped-down mouth sits over the target.
+# Tune POUR_D* / POUR_HEIGHT / TILT_ANGLE together if the stream misses.
+POUR_DX = 0.02
+POUR_DY = 0.0
+POUR_HEIGHT = 0.16
+# Roll the cup until its opening points essentially straight down. The sign is
+# negative on purpose: rolling this way moves joint 7 away from its limit,
+# whereas a positive roll jams it against the limit and stalls at ~90deg.
+TILT_ANGLE = np.deg2rad(-170.0)
+TILT_AXIS = APPROACH_DIR               # roll about the (horizontal) approach axis
 
 GRIP_OPEN = 255.0
 GRIP_CLOSED = 70.0
@@ -65,18 +84,35 @@ GRIP_CLOSED = 70.0
 Phase = namedtuple("Phase", ["name", "target_pos", "tilt", "grip", "duration"])
 
 
-def _add_cup(body, rgba):
+def grasp_quat():
+    """Quaternion for the gripper's side-grasp orientation.
+
+    Builds the pinch-site frame directly: local +z (the approach direction, out
+    through the fingers) points along APPROACH_DIR, and the fingers open along
+    FINGER_AXIS. This is the fixed orientation the gripper holds through the
+    whole task (the pour then rolls it about TILT_AXIS)."""
+    z_axis = APPROACH_DIR / np.linalg.norm(APPROACH_DIR)
+    x_axis = np.cross(FINGER_AXIS, z_axis)
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+    R = np.column_stack([x_axis, y_axis, z_axis])  # columns = site axes in world
+    quat = np.empty(4)
+    mujoco.mju_mat2Quat(quat, R.flatten())
+    return quat
+
+
+def _add_cup(body, rgba, radius=CUP_RADIUS):
     """Add bottom + ring-of-walls geoms forming an open-top round cup to `body`."""
     body.add_geom(
         name=f"{body.name}_bottom",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        size=[CUP_RADIUS, BOTTOM_THICK / 2, 0],
+        size=[radius, BOTTOM_THICK / 2, 0],
         pos=[0, 0, BOTTOM_THICK / 2],
         rgba=rgba,
         friction=[1, 0.05, 0.001],
     )
     wall_center_z = BOTTOM_THICK + CUP_HEIGHT / 2
-    seg_half_len = np.pi * CUP_RADIUS / N_WALL_SEG * 1.15  # slight overlap so no gaps
+    seg_half_len = np.pi * radius / N_WALL_SEG * 1.15  # slight overlap so no gaps
     for i in range(N_WALL_SEG):
         ang = 2 * np.pi * i / N_WALL_SEG
         quat = np.empty(4)
@@ -85,7 +121,7 @@ def _add_cup(body, rgba):
             name=f"{body.name}_wall{i}",
             type=mujoco.mjtGeom.mjGEOM_BOX,
             size=[WALL_THICK / 2, seg_half_len, CUP_HEIGHT / 2],
-            pos=[CUP_RADIUS * np.cos(ang), CUP_RADIUS * np.sin(ang), wall_center_z],
+            pos=[radius * np.cos(ang), radius * np.sin(ang), wall_center_z],
             quat=quat.tolist(),
             rgba=rgba,
             friction=[1, 0.05, 0.001],
@@ -122,7 +158,7 @@ def build_scene():
 
     # Target cup: fixed to the world so it stays put while being poured into.
     target = spec.worldbody.add_body(name="target_cup", pos=[TARGET_XY[0], TARGET_XY[1], 0])
-    _add_cup(target, rgba=[0.85, 0.55, 0.2, 1])
+    _add_cup(target, rgba=[0.85, 0.55, 0.2, 1], radius=TARGET_RADIUS)
 
     # Spheres inside the source cup.
     for i in range(N_PARTICLES):
@@ -133,9 +169,14 @@ def build_scene():
             type=mujoco.mjtGeom.mjGEOM_SPHERE,
             size=[PARTICLE_RADIUS, 0, 0],
             rgba=[0.9, 0.2, 0.2, 1],
-            friction=[0.6, 0.02, 0.001],
+            friction=PARTICLE_FRICTION,
+            solref=PARTICLE_SOLREF,
             condim=4,
         )
+        # The bulky gripper sits right under the cup mouth during the pour;
+        # let the spheres fall past it cleanly instead of being batted sideways.
+        for hand_part in ("/hand", "/left_finger", "/right_finger"):
+            spec.add_exclude(bodyname1=f"particle{i}", bodyname2=hand_part)
 
     # The cup is held by a weld to the hand (engaged at grasp time), so it never
     # needs to physically contact the fingers -- exclude those contacts.
@@ -241,8 +282,10 @@ class TiltIKController:
             self.gripper_act = model.actuator(gripper_actuator_name).id
         except KeyError:
             self.gripper_act = model.actuator("/" + gripper_actuator_name).id
-        self.home_quat = np.empty(4)
-        mujoco.mju_mat2Quat(self.home_quat, data.site_xmat[self.pinch_id].copy())
+        # Fixed side-grasp orientation the gripper holds (the startup pose points
+        # the gripper down; the IK slews it to this side orientation during the
+        # approach). The pour rolls this base orientation about TILT_AXIS.
+        self.base_quat = grasp_quat()
         self._jacp = np.zeros((3, model.nv))
         self._jacr = np.zeros((3, model.nv))
 
@@ -251,17 +294,17 @@ class TiltIKController:
         return self.data.site_xpos[self.pinch_id].copy()
 
     def target_quat(self, tilt):
-        """home orientation rotated by `tilt` radians about TILT_AXIS (world frame)."""
+        """base orientation rolled by `tilt` radians about TILT_AXIS (world frame)."""
         if tilt == 0.0:
-            return self.home_quat.copy()
+            return self.base_quat.copy()
         dquat = np.empty(4)
         mujoco.mju_axisAngle2Quat(dquat, TILT_AXIS, tilt)
         out = np.empty(4)
-        mujoco.mju_mulQuat(out, dquat, self.home_quat)  # world-frame pre-multiply
+        mujoco.mju_mulQuat(out, dquat, self.base_quat)  # world-frame pre-multiply
         return out
 
     def step(self, target_pos, target_quat, gripper_ctrl,
-             kp_pos=4.0, kp_ori=2.0, damping=0.15, max_dq=0.08):
+             kp_pos=8.0, kp_ori=1.5, damping=0.15, max_dq=0.10):
         data, model, pinch_id = self.data, self.model, self.pinch_id
 
         pos_err = target_pos - data.site_xpos[pinch_id]
@@ -290,21 +333,24 @@ class TiltIKController:
 
 
 def build_phases():
-    rim_z = BOTTOM_THICK + CUP_HEIGHT  # gripper grabs near the cup's rim
-    hover_pick = [SOURCE_XY[0], SOURCE_XY[1], HOVER_HEIGHT]
-    grasp_pos = [SOURCE_XY[0], SOURCE_XY[1], rim_z]
-    pour_pos = [TARGET_XY[0] + POUR_DX, TARGET_XY[1], POUR_HEIGHT]
+    grasp_z = BOTTOM_THICK + GRASP_FRAC * CUP_HEIGHT   # grab this far up the wall
+    grasp_pos = [SOURCE_XY[0], SOURCE_XY[1], grasp_z]
+    pre_grasp = list(np.array(grasp_pos) - PRE_GRASP_BACK * APPROACH_DIR)  # stand off to the side
+    lift_pos = [SOURCE_XY[0], SOURCE_XY[1], HOVER_HEIGHT]
+    pour_pos = [TARGET_XY[0] + POUR_DX, TARGET_XY[1] + POUR_DY, POUR_HEIGHT]
+    away_pos = [pour_pos[0], pour_pos[1], HOVER_HEIGHT]
     return [
         Phase("home_settle",   None,        0.0,        GRIP_OPEN,   0.5),
-        Phase("hover_pick",    hover_pick,  0.0,        GRIP_OPEN,   1.5),
-        Phase("descend_pick",  grasp_pos,   0.0,        GRIP_OPEN,   1.2),
+        Phase("pre_grasp",     pre_grasp,   0.0,        GRIP_OPEN,   2.5),  # reorient + move beside cup
+        Phase("approach",      grasp_pos,   0.0,        GRIP_OPEN,   1.3),  # slide in horizontally
         Phase("grasp",         grasp_pos,   0.0,        GRIP_CLOSED, 0.6),
-        Phase("lift",          hover_pick,  0.0,        GRIP_CLOSED, 1.2),
-        Phase("transit",       pour_pos,    0.0,        GRIP_CLOSED, 2.0),
-        Phase("pour",          pour_pos,    TILT_ANGLE, GRIP_CLOSED, 2.0),
-        Phase("drain",         pour_pos,    TILT_ANGLE, GRIP_CLOSED, 1.5),
-        Phase("upright",       pour_pos,    0.0,        GRIP_CLOSED, 1.5),
-        Phase("retreat",       hover_pick,  0.0,        GRIP_CLOSED, 1.8),
+        Phase("lift",          lift_pos,    0.0,        GRIP_CLOSED, 1.4),
+        Phase("transit",       pour_pos,    0.0,        GRIP_CLOSED, 2.2),
+        Phase("pour",          pour_pos,    TILT_ANGLE, GRIP_CLOSED, 2.5),
+        Phase("drain",         pour_pos,    TILT_ANGLE, GRIP_CLOSED, 3.0),
+        Phase("lift_away",     away_pos,    TILT_ANGLE, GRIP_CLOSED, 1.5),  # leave before uprighting
+        Phase("upright",       away_pos,    0.0,        GRIP_CLOSED, 1.3),
+        Phase("retreat",       lift_pos,    0.0,        GRIP_CLOSED, 1.8),
     ]
 
 
