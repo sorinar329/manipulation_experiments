@@ -44,7 +44,7 @@ BOTTOM_THICK = 0.010                   # thick bottom so poured spheres don't tu
 N_WALL_SEG = 16
 
 SOURCE_XY = np.array([0.45, -0.15])   # cup that starts full, gets picked up
-TARGET_XY = np.array([0.50, 0.18])    # empty cup, fixed to the world -- under the pour
+TARGET_XY = np.array([0.50, 0.18])    # empty cup resting on the floor -- under the pour
 
 # --- Spheres that start inside the source cup. ---
 N_PARTICLES = 10
@@ -156,8 +156,10 @@ def build_scene():
     source.add_freejoint()
     _add_cup(source, rgba=[0.2, 0.5, 0.85, 1])
 
-    # Target cup: fixed to the world so it stays put while being poured into.
+    # Target cup: free-jointed and just resting on the floor, so it topples if
+    # the arm bumps it rather than behaving like an immovable bollard.
     target = spec.worldbody.add_body(name="target_cup", pos=[TARGET_XY[0], TARGET_XY[1], 0])
+    target.add_freejoint()
     _add_cup(target, rgba=[0.85, 0.55, 0.2, 1], radius=TARGET_RADIUS)
 
     # Spheres inside the source cup.
@@ -213,6 +215,7 @@ def reset_props(model, data):
     # attach() re-pads the "home" keyframe with zeros for the new free dofs, so
     # every free body's spawn pose has to be restored after a reset.
     _reset_free_body(model, data, "source_cup", [SOURCE_XY[0], SOURCE_XY[1], 0])
+    _reset_free_body(model, data, "target_cup", [TARGET_XY[0], TARGET_XY[1], 0])
     for i in range(N_PARTICLES):
         _reset_free_body(model, data, f"particle{i}", _particle_home(i))
 
