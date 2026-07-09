@@ -30,8 +30,11 @@ import numpy as np
 # Reuse the qpos/qvel address lookup verbatim; it is agnostic to which
 # free-jointed body it is asked about.
 from pick_and_place import _box_addrs
+from recorder import FrameRecorder, launch_viewer
 
-PANDA_DIR = Path(__file__).resolve().parent.parent / "resources/robot/robot_arms/franka_emika_panda"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PANDA_DIR = REPO_ROOT / "resources/robot/robot_arms/franka_emika_panda"
+RECORDING_FILE = REPO_ROOT / "recording/pouring.csv"
 
 # --- Cup geometry (a round, open-top cup approximated by a wall of thin box
 # --- segments around a thin cylindrical bottom, since MuJoCo has no hollow
@@ -142,8 +145,11 @@ def _particle_home(i):
     ])
 
 
-def build_scene():
-    """Compose arm + gripper + two cups + spheres into one compiled MuJoCo model."""
+def build_spec():
+    """Compose arm + gripper + two cups + spheres into an uncompiled MjSpec.
+
+    Split out of build_scene() so the same scene can be exported to MJCF (see
+    replay_pouring) rather than only compiled in place."""
     spec = mujoco.MjSpec.from_file(str(PANDA_DIR / "scene.xml"))
     hand_spec = mujoco.MjSpec.from_file(str(PANDA_DIR / "hand.xml"))
     spec.attach(hand_spec, site=spec.site("attachment_site"))
@@ -196,6 +202,12 @@ def build_scene():
     weld.solref = [0.01, 1.0]                    # stiff, so the cup tracks the hand tightly
     weld.solimp = [0.95, 0.99, 0.001, 0.5, 2.0]
 
+    return spec
+
+
+def build_scene():
+    """Compile the pouring scene and put every body at its spawn pose."""
+    spec = build_spec()
     model = spec.compile()
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, 0)
@@ -358,15 +370,22 @@ def build_phases():
 
 
 def play(model, data, controller, grasp, phases, target_mocap_name="target",
-         on_cycle_end=None, num_cycles=None):
+         on_cycle_end=None, num_cycles=None, recorder=None, headless=False):
     """Drive the viewer through repeated laps of the phase sequence, interpolating
-    both the position target and the tilt angle within each phase."""
+    both the position target and the tilt angle within each phase.
+
+    recorder: optional FrameRecorder; when given, one row is captured per frame.
+    headless: run without opening a viewer window (for batch recording).
+    """
     target_mocap_id = model.body(target_mocap_name).mocapid[0]
+    if headless and num_cycles is None:
+        num_cycles = 1
 
     cycle = 0
-    with mujoco.viewer.launch_passive(model, data) as viewer:
+    with launch_viewer(model, data, headless=headless) as viewer:
         while viewer.is_running() and (num_cycles is None or cycle < num_cycles):
             prev_tilt = 0.0
+            frame = 0
             for phase in phases:
                 start_pos = controller.pinch_pos
                 end_pos = np.array(phase.target_pos) if phase.target_pos is not None else start_pos
@@ -388,10 +407,15 @@ def play(model, data, controller, grasp, phases, target_mocap_name="target",
                     controller.step(target, controller.target_quat(tilt), phase.grip)
                     mujoco.mj_step(model, data)
 
+                    if recorder is not None:
+                        recorder.record(cycle, frame, phase=phase.name)
+                    frame += 1
+
                     viewer.sync()
-                    remaining = model.opt.timestep - (time.time() - step_start)
-                    if remaining > 0:
-                        time.sleep(remaining)
+                    if not headless:
+                        remaining = model.opt.timestep - (time.time() - step_start)
+                        if remaining > 0:
+                            time.sleep(remaining)
 
                 prev_tilt = phase.tilt
 
@@ -402,15 +426,26 @@ def play(model, data, controller, grasp, phases, target_mocap_name="target",
             mujoco.mj_forward(model, data)
 
 
-def run_demo(num_cycles=None):
-    """Launch the MuJoCo viewer and play the pouring loop on the plain floor scene."""
+def run_demo(num_cycles=None, record=False, record_path=None, headless=False, fps=30):
+    """Launch the MuJoCo viewer and play the pouring loop on the plain floor scene.
+
+    record: capture link poses + joint states and write a CSV on exit.
+    record_path: explicit CSV path (default recordings/pouring_<timestamp>.csv).
+    headless: run without a viewer window (useful for batch recording).
+    fps: recording rate; the ~500 Hz physics is decimated to this (None = every step).
+    """
     model, data = build_scene()
     controller = TiltIKController(model, data)
     grasp = WeldGrasp(model, data)
     phases = build_phases()
+    recorder = FrameRecorder(model, data, experiment="pouring", fps=fps) if record else None
     play(model, data, controller, grasp, phases,
-         on_cycle_end=lambda: reset_props(model, data), num_cycles=num_cycles)
+         on_cycle_end=lambda: reset_props(model, data), num_cycles=num_cycles,
+         recorder=recorder, headless=headless)
+    if recorder is not None:
+        path = recorder.save(record_path)
+        print(f"Recorded {len(recorder)} frames to {path}")
 
 
 if __name__ == "__main__":
-    run_demo()
+    run_demo(record=True, record_path=RECORDING_FILE, headless=False, num_cycles=1)

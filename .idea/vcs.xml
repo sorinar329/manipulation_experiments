@@ -2,5 +2,8 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../workspace/cognitive_robot_abstract_machine" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../workspace/cognitive_robot_abstract_machine/random_events/src/random-events-lib" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../workspace/cognitive_robot_abstract_machine/semantic_digital_twin/src/ripple_down_rules_meta" vcs="Git" />
   </component>
 </project>

@@ -15,6 +15,8 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+from recorder import FrameRecorder, launch_viewer
+
 PANDA_DIR = Path(__file__).resolve().parent.parent / "resources/robot/robot_arms/franka_emika_panda"
 
 BOX_HALF_SIZE = 0.02
@@ -223,17 +225,22 @@ def build_phases(box_start=None, place_xy=None, hover_height=None, box_half_size
 
 
 def play(model, data, controller, grasp, phases, target_mocap_name="target", on_cycle_end=None,
-         num_cycles=None):
+         num_cycles=None, recorder=None, headless=False):
     """Drive the MuJoCo viewer through repeated laps of the phase sequence.
 
     num_cycles: number of pick-and-place repetitions, or None to loop until
     the viewer window is closed.
+    recorder: optional FrameRecorder; when given, one row is captured per frame.
+    headless: run without opening a viewer window (for batch recording).
     """
     target_mocap_id = model.body(target_mocap_name).mocapid[0]
+    if headless and num_cycles is None:
+        num_cycles = 1
 
     cycle = 0
-    with mujoco.viewer.launch_passive(model, data) as viewer:
+    with launch_viewer(model, data, headless=headless) as viewer:
         while viewer.is_running() and (num_cycles is None or cycle < num_cycles):
+            frame = 0
             for phase in phases:
                 start_pos = controller.pinch_pos
                 end_pos = np.array(phase.target_pos) if phase.target_pos is not None else start_pos
@@ -256,10 +263,15 @@ def play(model, data, controller, grasp, phases, target_mocap_name="target", on_
                     mujoco.mj_step(model, data)
                     grasp.update()
 
+                    if recorder is not None:
+                        recorder.record(cycle, frame, phase=phase.name)
+                    frame += 1
+
                     viewer.sync()
-                    remaining = model.opt.timestep - (time.time() - step_start)
-                    if remaining > 0:
-                        time.sleep(remaining)
+                    if not headless:
+                        remaining = model.opt.timestep - (time.time() - step_start)
+                        if remaining > 0:
+                            time.sleep(remaining)
 
             cycle += 1
             grasp.release()
@@ -268,14 +280,24 @@ def play(model, data, controller, grasp, phases, target_mocap_name="target", on_
             mujoco.mj_forward(model, data)
 
 
-def run_demo(num_cycles=None):
-    """Launch the MuJoCo viewer and play the pick-and-place loop on the plain floor scene."""
+def run_demo(num_cycles=None, record=False, record_path=None, headless=False, fps=30):
+    """Launch the MuJoCo viewer and play the pick-and-place loop on the plain floor scene.
+
+    record: capture link poses + joint states and write a CSV on exit.
+    record_path: explicit CSV path (default recordings/pick_and_place_<timestamp>.csv).
+    headless: run without a viewer window (useful for batch recording).
+    fps: recording rate; the ~500 Hz physics is decimated to this (None = every step).
+    """
     model, data = build_scene()
     controller = DiffIKController(model, data)
     grasp = KinematicGrasp(model, data, controller.pinch_id)
     phases = build_phases()
+    recorder = FrameRecorder(model, data, experiment="pick_and_place", fps=fps) if record else None
     play(model, data, controller, grasp, phases, on_cycle_end=lambda: _reset_box(model, data),
-         num_cycles=num_cycles)
+         num_cycles=num_cycles, recorder=recorder, headless=headless)
+    if recorder is not None:
+        path = recorder.save(record_path)
+        print(f"Recorded {len(recorder)} frames to {path}")
 
 
 if __name__ == "__main__":

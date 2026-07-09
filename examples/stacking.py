@@ -9,10 +9,17 @@ The cubes are carried kinematically (pinned to the gripper) like the box in the
 pick-and-place demo, but unlike that demo they physically collide with each
 other, so each placed cube rests on the one below and the stack holds up under
 normal simulated contact.
+
+    python examples/stacking.py                    # watch it build towers
+    python examples/stacking.py --cubes 6          # a taller tower
+    python examples/stacking.py --record           # write recording/stacking.csv
+
+See replay_stacking.py for playing a recording back into a semantic_digital_twin
+world.
 """
 
+import argparse
 import colorsys
-import sys
 import time
 from pathlib import Path
 
@@ -23,11 +30,18 @@ import numpy as np
 # Reuse the controller, the kinematic-carry helper, and its address lookup
 # straight from the pick-and-place demo -- they need no changes for stacking.
 from pick_and_place import DiffIKController, KinematicGrasp, _box_addrs, Phase
+from recorder import FrameRecorder, launch_viewer
 
-PANDA_DIR = Path(__file__).resolve().parent.parent / "resources/robot/robot_arms/franka_emika_panda"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PANDA_DIR = REPO_ROOT / "resources/robot/robot_arms/franka_emika_panda"
+RECORDING_FILE = REPO_ROOT / "recording/stacking.csv"
 
 HALF = 0.02                       # cube half-size (edge = 0.04)
 N_CUBES = 25                      # crank this up to see how tall a tower it can build
+
+# Cubes recorded by --record. The full 25-cube tower is minutes of simulation and
+# a CSV to match, while four levels already exercise every phase of the stack.
+RECORD_CUBES = 4
 
 STACK_XY = np.array([0.50, 0.15])
 
@@ -83,13 +97,30 @@ CUBE_STARTS = make_starts(N_CUBES)
 CUBE_COLORS = make_colors(N_CUBES)
 
 
+def set_n_cubes(n):
+    """Resize the cube set, keeping the derived start grid and colors in step.
+
+    The scene is built from these module globals, so a replay has to resize them
+    to whatever its recording captured before rebuilding the spec."""
+    global N_CUBES, CUBE_STARTS, CUBE_COLORS
+    N_CUBES = n
+    CUBE_STARTS = make_starts(n)
+    CUBE_COLORS = make_colors(n)
+
+
 def _stack_center_z(level):
     """Resting center height of the cube at a given stack level (0 = bottom)."""
     return HALF * (2 * level + 1)
 
 
-def build_scene():
-    """Compose arm + gripper + three pickable cubes + a place pad into one model."""
+def build_spec():
+    """Compose arm + gripper + pickable cubes + a place pad into an uncompiled MjSpec.
+
+    Split out of build_scene() so the same scene can be exported to MJCF (see
+    replay_stacking) rather than only compiled in place. Note the contact and
+    collision-mask tuning build_scene() applies lives on the compiled *model*,
+    not on the spec, so it does not survive an export -- the replay is purely
+    kinematic and has no use for it."""
     spec = mujoco.MjSpec.from_file(str(PANDA_DIR / "scene.xml"))
     hand_spec = mujoco.MjSpec.from_file(str(PANDA_DIR / "hand.xml"))
     spec.attach(hand_spec, site=spec.site("attachment_site"))
@@ -122,7 +153,12 @@ def build_scene():
         conaffinity=0,
     )
 
-    model = spec.compile()
+    return spec
+
+
+def build_scene():
+    """Compile the stacking scene and put every cube at its spawn pose."""
+    model = build_spec().compile()
 
     # Put the gripper's collision geoms on HAND_BIT only, so they collide with
     # cubes (which carry that bit) but not with the floor/arm. Visual geoms have
@@ -205,16 +241,24 @@ def build_cube_phases(level):
     ]
 
 
-def play_stack(model, data, controller, target_mocap_name="target", num_towers=None):
-    """Drive the viewer, stacking the three cubes into a tower each lap."""
+def play_stack(model, data, controller, target_mocap_name="target", num_towers=None,
+               recorder=None, headless=False):
+    """Drive the viewer, stacking the three cubes into a tower each lap.
+
+    recorder: optional FrameRecorder; when given, one row is captured per frame.
+    headless: run without opening a viewer window (for batch recording).
+    """
     target_mocap_id = model.body(target_mocap_name).mocapid[0]
+    if headless and num_towers is None:
+        num_towers = 1
     # One kinematic grasp per cube (each tracks its own free joint).
     grasps = [CollisionAwareGrasp(model, data, controller.pinch_id, box_name=f"cube{i}")
               for i in range(N_CUBES)]
 
     tower = 0
-    with mujoco.viewer.launch_passive(model, data) as viewer:
+    with launch_viewer(model, data, headless=headless) as viewer:
         while viewer.is_running() and (num_towers is None or tower < num_towers):
+            frame = 0
             for level in range(N_CUBES):
                 grasp = grasps[level]
                 for phase in build_cube_phases(level):
@@ -239,10 +283,15 @@ def play_stack(model, data, controller, target_mocap_name="target", num_towers=N
                         mujoco.mj_step(model, data)
                         grasp.update()
 
+                        if recorder is not None:
+                            recorder.record(tower, frame, phase=f"cube{level}:{phase.name}")
+                        frame += 1
+
                         viewer.sync()
-                        remaining = model.opt.timestep - (time.time() - step_start)
-                        if remaining > 0:
-                            time.sleep(remaining)
+                        if not headless:
+                            remaining = model.opt.timestep - (time.time() - step_start)
+                            if remaining > 0:
+                                time.sleep(remaining)
 
             tower += 1
             for grasp in grasps:
@@ -263,20 +312,41 @@ def _gripper_actuator(model):
     raise KeyError("gripper actuator not found")
 
 
-def run_demo(n_cubes=None, num_towers=None):
-    """Launch the MuJoCo viewer and stack the cubes into a tower on the floor scene."""
-    global N_CUBES, CUBE_STARTS, CUBE_COLORS
+def run_demo(n_cubes=None, num_towers=None, record=False, record_path=None, headless=False, fps=30):
+    """Launch the MuJoCo viewer and stack the cubes into a tower on the floor scene.
+
+    record: capture link poses + joint states and write a CSV on exit.
+    record_path: explicit CSV path (default recordings/stacking_<timestamp>.csv).
+    headless: run without a viewer window (useful for batch recording).
+    fps: recording rate; the ~500 Hz physics is decimated to this (None = every step).
+    """
     if n_cubes is not None:
-        N_CUBES = n_cubes
-        CUBE_STARTS = make_starts(N_CUBES)
-        CUBE_COLORS = make_colors(N_CUBES)
+        set_n_cubes(n_cubes)
     model, data = build_scene()
     controller = DiffIKController(model, data, gripper_actuator_name=_gripper_actuator(model))
-    play_stack(model, data, controller, num_towers=num_towers)
+    recorder = FrameRecorder(model, data, experiment="stacking", fps=fps) if record else None
+    play_stack(model, data, controller, num_towers=num_towers, recorder=recorder, headless=headless)
+    if recorder is not None:
+        path = recorder.save(record_path)
+        print(f"Recorded {len(recorder)} frames to {path}")
 
 
 if __name__ == "__main__":
-    # Usage: python stacking.py [n_cubes] [num_towers]
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    towers = int(sys.argv[2]) if len(sys.argv) > 2 else None
-    run_demo(n_cubes=n, num_towers=towers)
+    parser = argparse.ArgumentParser(description="Stack cubes into a tower with the Panda arm.")
+    parser.add_argument("--cubes", type=int, help=f"cubes to stack (default: {N_CUBES})")
+    parser.add_argument("--towers", type=int, help="stacking laps to run (default: until the viewer closes)")
+    parser.add_argument("--record", action="store_true",
+                        help=f"capture the episode to {RECORDING_FILE.relative_to(REPO_ROOT)}")
+    parser.add_argument("--headless", action="store_true", help="run without a viewer window")
+    parser.add_argument("--fps", type=int, default=30, help="recording rate (default: 30)")
+    args = parser.parse_args()
+
+    n_cubes, num_towers = args.cubes, args.towers
+    if args.record:
+        # A recording wants a bounded episode, so default it to a single short lap.
+        n_cubes = n_cubes or RECORD_CUBES
+        num_towers = num_towers or 1
+
+    run_demo(n_cubes=n_cubes, num_towers=num_towers, record=args.record,
+             record_path=RECORDING_FILE if args.record else None,
+             headless=args.headless, fps=args.fps)
