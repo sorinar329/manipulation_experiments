@@ -21,7 +21,7 @@ import re
 import stacking
 from mjcf_replay import REPO_ROOT, ReplayScene
 
-CSV_FILE = REPO_ROOT / "recording/stacking.csv"
+CSV_FILE = REPO_ROOT / "recording/stacking_3.csv"
 _CUBE_COLUMN = re.compile(r"body\.cube(\d+)\.px$")
 
 

@@ -4,18 +4,31 @@ Replays recording/stacking.csv into the semantic_digital_twin world built by
 replay_stacking, ticks a Segmind statechart of detectors over every frame, and
 writes the detected event timeline to an interactive plot.
 
-The detectors form the usual three tiers, with the coarse tier gated on the
-spatial one so it only runs while its precondition holds:
+The detectors form four tiers. The coarse tier is gated on the spatial one so
+it only runs while its precondition holds; the agent tier recomputes gripper
+contact directly from the world each tick, so it needs no gating:
 
     atomic   ContactDetector, LossOfContactDetector,
              TranslationDetector, StopTranslationDetector
     spatial  SupportDetector, LossOfSupportDetector
     coarse   PlacingDetector          <- support
              PickUpDetector           <- loss of support
+             StackingDetector         <- support, where the lower object is itself supported
+    agent    HoldingDetector, LossOfHoldingDetector    <- contact with a gripper finger
+             LiftingDetector                           <- held object rises past lift_threshold
 
-Modelled on segmind/demo/tiago_demo_ready.py (branch safety_ai_ws). That demo
-also wires HoldingDetector / LiftingDetector / OpeningDetector, which do not
-exist on the branch installed here, so this pipeline stops at pick up and place.
+StackingDetector only fires between bodies that share a semantic annotation
+type (here, both cubes are annotated Cube below), and only once the *lower*
+body is itself currently supported -- so cube0 resting on the floor never
+counts by itself, but cube1 resting on cube0 does once cube0 has its own
+support.
+
+Modelled on segmind/demo/tiago_demo_ready.py (branch safety_ai_ws), which wired
+the same HoldingDetector / LiftingDetector / OpeningDetector trio through an
+older, differently-structured detector base. HoldingDetector and LiftingDetector
+have since been ported to segmind.detectors.agent_event_detectors_nodes on this
+branch; OpeningDetector has not (there is no hinged object in this scene, so it
+would be untestable here).
 It also gates every tier with start + end conditions; see build_pipeline for why
 that wiring silently retires the detectors after their first event.
 
@@ -32,12 +45,18 @@ import geometry_msgs even when nothing is published.
 import argparse
 import time
 from bisect import bisect_left
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Set
 
 from giskardpy.motion_statechart.context import MotionStatechartContext
 from krrood.symbolic_math.symbolic_math import trinary_logic_not
+from segmind.detectors.agent_event_detectors_nodes import (
+    HoldingDetector,
+    LiftingDetector,
+    LossOfHoldingDetector,
+)
 from segmind.detectors.atomic_event_detectors_nodes import (
     ContactDetector,
     LossOfContactDetector,
@@ -45,13 +64,14 @@ from segmind.detectors.atomic_event_detectors_nodes import (
     TranslationDetector,
 )
 from segmind.detectors.base import SegmindContext
-from segmind.detectors.coarse_event_detector_nodes import PickUpDetector, PlacingDetector
+from segmind.detectors.coarse_event_detector_nodes import PickUpDetector, PlacingDetector, StackingDetector
 from segmind.detectors.spatial_relation_detector_nodes import (
     LossOfSupportDetector,
     SupportDetector,
 )
 from segmind.episode_segmenter import EpisodeSegmenterExecutor
 from segmind.statecharts.segmind_statechart import SegmindStatechart
+from semantic_digital_twin.semantic_annotations.semantic_annotations import Cube
 from semantic_digital_twin.world_description.connections import Connection6DoF
 from semantic_digital_twin.world_description.world_entity import Body
 
@@ -61,6 +81,9 @@ from replay_stacking import SCENE
 PLOT_FILE = REPO_ROOT / "recording/stacking_events.html"
 FPS_LOG_INTERVAL = 100
 FLOOR_BODY = "floor"
+GRIPPER_BODY_NAMES = ["/left_finger", "/right_finger"]
+"""Panda hand body names (see resources/robot/robot_arms/franka_emika_panda/hand.xml)
+that count as gripper contact surfaces for HoldingDetector/LossOfHoldingDetector."""
 
 
 @dataclass(eq=False, repr=False)
@@ -111,6 +134,18 @@ def support_candidates(world) -> List[Body]:
     ]
 
 
+def annotate_cubes(world) -> None:
+    """Marks every free-floating body as a Cube, so StackingDetector's similarity
+    check (shared semantic annotation type) treats them as stackable and the
+    floor -- which gets no annotation -- as a non-similar base."""
+    cubes = [
+        body for body in world.bodies_with_collision
+        if type(body.parent_connection) is Connection6DoF
+    ]
+    with world.modify_world():
+        world.add_semantic_annotations([Cube(root=cube) for cube in cubes])
+
+
 def build_pipeline(world):
     """Wire the detector statechart and the executor that ticks it.
 
@@ -119,17 +154,22 @@ def build_pipeline(world):
     frame loop below for the same generator; driving the player by hand keeps one
     frame and one tick in lockstep.
     """
+    annotate_cubes(world)
     executor = EpisodeSegmenterExecutor(context=MotionStatechartContext(world=world))
 
     supporters = support_candidates(world)
     contact = ContactDetector()
     loss_of_contact = LossOfContactDetector()
-    translation = TranslationDetector()
-    stop_translation = StopTranslationDetector()
+    translation = TranslationDetector(window_size=10)
+    stop_translation = StopTranslationDetector(window_size=10)
     support = CubeSupportDetector(supporters=supporters)
     loss_of_support = CubeLossOfSupportDetector(supporters=supporters)
     placing = PlacingDetector()
     pick_up = PickUpDetector()
+    stacking = StackingDetector()
+    holding = HoldingDetector(gripper_body_names=GRIPPER_BODY_NAMES)
+    loss_of_holding = LossOfHoldingDetector(gripper_body_names=GRIPPER_BODY_NAMES)
+    lifting = LiftingDetector()
 
     # No detector is given a `tracked_object`, so each falls back to every body
     # held by a Connection6DoF -- exactly the four free-floating cubes. The arm's
@@ -138,7 +178,8 @@ def build_pipeline(world):
         contact, loss_of_contact,
         translation, stop_translation,
         support, loss_of_support,
-        placing, pick_up,
+        placing, pick_up, stacking,
+        holding, loss_of_holding, lifting,
     ])
 
     # Conditions can only be wired once a node belongs to a statechart, since
@@ -164,6 +205,10 @@ def build_pipeline(world):
 
     pick_up.start_condition = loss_of_support.observation_variable
     pick_up.reset_condition = trinary_logic_not(loss_of_support.observation_variable)
+
+    # stacking/holding/loss_of_holding/lifting are left ungated like the spatial
+    # tier: each reads current support/contact state directly instead of
+    # rescanning the event log, so there is no expensive work to gate away.
 
     return executor, statechart
 
@@ -191,25 +236,26 @@ def retime_events_to_sim_clock(events, frame_marks):
         event.timestamp = epoch + timedelta(seconds=sim_times[index])
 
 
-def run(max_frames=None, show=False, rviz=False, plot_file=PLOT_FILE):
+def run(max_frames=None, show=True, rviz=False, plot_file=PLOT_FILE, csv_file=None):
     print("=== Segmind stacking pipeline ===\n")
 
-    print(f"Loading episode: {SCENE.csv_file}")
-    player = SCENE.build_player()
+    scene = replace(SCENE, csv_file=Path(csv_file)) if csv_file else SCENE
+    print(f"Loading episode: {scene.csv_file}")
+    player = scene.build_player()
     world = player.world
 
     print("Compiling statechart ...")
     executor, statechart = build_pipeline(world)
     segmind_context = executor.context.require_extension(SegmindContext)
 
-    if rviz:
-        import rclpy
-        from semantic_digital_twin.adapters.ros.visualization.viz_marker import (
-            VizMarkerPublisher,
-        )
-        rclpy.init()
-        node = rclpy.create_node("segmind_stacking")
-        VizMarkerPublisher(node=node, _world=world).with_tf_publisher()
+
+    import rclpy
+    from semantic_digital_twin.adapters.ros.visualization.viz_marker import (
+        VizMarkerPublisher,
+    )
+    rclpy.init()
+    node = rclpy.create_node("segmind_stacking")
+    VizMarkerPublisher(node=node, _world=world).with_tf_publisher()
 
     executor.compile(statechart)
 
@@ -253,8 +299,9 @@ def main():
     parser.add_argument("--show", action="store_true", help="open the timeline in a browser")
     parser.add_argument("--rviz", action="store_true", help="also publish the world as markers")
     parser.add_argument("--plot", type=str, default=str(PLOT_FILE), help="where to write the timeline")
+    parser.add_argument("--csv", type=str, help=f"episode to replay (default: {SCENE.csv_file})")
     args = parser.parse_args()
-    run(max_frames=args.max_frames, show=args.show, rviz=args.rviz, plot_file=args.plot)
+    run(max_frames=args.max_frames, show=True, rviz=args.rviz, plot_file=args.plot, csv_file=args.csv)
 
 
 if __name__ == "__main__":
