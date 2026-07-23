@@ -238,6 +238,7 @@
                         <geom class="/visual" material="/off_white" mesh="/hand_4" />
                         <geom class="/collision" mesh="/hand_c" />
                         <site name="pinch_site" pos="0 0 0.1034" rgba="1 0 1 0.5" />
+                        <body name="/tool_frame" pos="0 0 0.1034" />
                         <body name="/left_finger" pos="0 0 0.0584">
                           <inertial pos="0 0 0" mass="0.015" diaginertia="2.375e-06 2.375e-06 7.5e-07" />
                           <joint name="/finger_joint1" class="/finger" pos="0 0 0" axis="0 1 0" />
@@ -275,24 +276,13 @@
     <body name="target" pos="0.5 0 0.5" quat="0 1 0 0" mocap="true">
       <site pos="0 0 0" size="0.01" group="1" rgba="0 0 1 1" />
     </body>
-    <body name="cube0" pos="0.34 -0.14 0.02">
+    <body name="cube0" pos="0.34 -0.14 0.12">
       <joint type="free" />
       <geom name="cube0_geom" size="0.02 0.02 0.02" type="box" contype="3" conaffinity="3" friction="0.9 0.05 0.001" solref="0.008" solimp="0.96 0.99" rgba="0.9 0.315 0.315 1" />
     </body>
-    <body name="cube1" pos="0.43 -0.14 0.02">
-      <joint type="free" />
-      <geom name="cube1_geom" size="0.02 0.02 0.02" type="box" contype="3" conaffinity="3" friction="0.9 0.05 0.001" solref="0.008" solimp="0.96 0.99" rgba="0.6075 0.9 0.315 1" />
-    </body>
-    <body name="cube2" pos="0.52 -0.14 0.02">
-      <joint type="free" />
-      <geom name="cube2_geom" size="0.02 0.02 0.02" type="box" contype="3" conaffinity="3" friction="0.9 0.05 0.001" solref="0.008" solimp="0.96 0.99" rgba="0.315 0.9 0.9 1" />
-    </body>
-    <body name="cube3" pos="0.61 -0.14 0.02">
-      <joint type="free" />
-      <geom name="cube3_geom" size="0.02 0.02 0.02" type="box" contype="3" conaffinity="3" friction="0.9 0.05 0.001" solref="0.008" solimp="0.96 0.99" rgba="0.6075 0.315 0.9 1" />
-    </body>
   <body name="floor"><geom name="floor" size="1.0 1.0 0.01" type="box" material="grid" pos="0.0 0.0 -0.01" rgba="0.35 0.40 0.45 1" />
     </body><body name="stack_pad"><geom name="stack_pad" size="0.05 0.05 0.001" pos="0.5 0.15 0.001" type="box" contype="0" conaffinity="0" rgba="0.9 0.9 0.2 0.4" />
+    </body><body name="table" pos="0.34 -0.14 0.05"><geom name="table_geom" size="0.15 0.15 0.05" type="box" rgba="0.6 0.45 0.3 1" />
     </body></worldbody>
 
   <contact>
@@ -323,6 +313,6 @@
   </actuator>
 
   <keyframe>
-    <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 0" />
+    <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0 0 0.34 -0.14 0.12 1 0 0 0" ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 0" />
   </keyframe>
 </mujoco>
