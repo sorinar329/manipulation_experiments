@@ -280,9 +280,14 @@
       <joint type="free" />
       <geom name="cube0_geom" size="0.02 0.02 0.02" type="box" contype="3" conaffinity="3" friction="0.9 0.05 0.001" solref="0.008" solimp="0.96 0.99" rgba="0.9 0.315 0.315 1" />
     </body>
+    <body name="cube1" pos="0.28 -0.14 0.12">
+      <joint type="free" />
+      <geom name="cube1_geom" size="0.02 0.02 0.02" type="box" contype="3" conaffinity="3" friction="0.9 0.05 0.001" solref="0.008" solimp="0.96 0.99" rgba="0.315 0.9 0.315 1" />
+    </body>
   <body name="floor"><geom name="floor" size="1.0 1.0 0.01" type="box" material="grid" pos="0.0 0.0 -0.01" rgba="0.35 0.40 0.45 1" />
     </body><body name="stack_pad"><geom name="stack_pad" size="0.05 0.05 0.001" pos="0.5 0.15 0.001" type="box" contype="0" conaffinity="0" rgba="0.9 0.9 0.2 0.4" />
     </body><body name="table" pos="0.34 -0.14 0.05"><geom name="table_geom" size="0.15 0.15 0.05" type="box" rgba="0.6 0.45 0.3 1" />
+    </body><body name="table2" pos="0.34 0.16 0.05"><geom name="table2_geom" size="0.15 0.15 0.05" type="box" rgba="0.3 0.45 0.6 1" />
     </body></worldbody>
 
   <contact>
@@ -313,6 +318,6 @@
   </actuator>
 
   <keyframe>
-    <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0 0 0.34 -0.14 0.12 1 0 0 0" ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 0" />
+    <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0 0 0.34 -0.14 0.12 1 0 0 0 0.28 -0.14 0.12 1 0 0 0" ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 0" />
   </keyframe>
 </mujoco>
