@@ -1,5 +1,5 @@
 <mujoco model="panda scene">
-  <compiler angle="radian" meshdir="/home/sorin/dev/manipulation_experiments/resources/robot/robot_arms/franka_emika_panda/assets/" />
+  <compiler angle="radian" meshdir="/home/nvasant/workspace/ros/src/manipulation_experiments/resources/robot/robot_arms/franka_emika_panda/assets/" />
 
   <option integrator="implicitfast" />
 
@@ -238,6 +238,7 @@
                         <geom class="/visual" material="/off_white" mesh="/hand_4" />
                         <geom class="/collision" mesh="/hand_c" />
                         <site name="pinch_site" pos="0 0 0.1034" rgba="1 0 1 0.5" />
+                        <body name="/tool_frame" pos="0 0 0.1034" />
                         <body name="/left_finger" pos="0 0 0.0584">
                           <inertial pos="0 0 0" mass="0.015" diaginertia="2.375e-06 2.375e-06 7.5e-07" />
                           <joint name="/finger_joint1" class="/finger" pos="0 0 0" axis="0 1 0" />
