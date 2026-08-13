@@ -44,7 +44,7 @@ def build_spec():
 SCENE = ReplayScene(
     build_spec=build_spec,
     csv_file=CSV_FILE,
-    scene_file=REPO_ROOT / "resources/generated/stacking_scene.xml",
+    scene_file=REPO_ROOT / "resources/generated/panda.xml",
     meshdir=stacking.PANDA_DIR / "assets",
     node_name="stacking_replay",
 )
